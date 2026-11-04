@@ -1,0 +1,21 @@
+name: Mahdi
+on:
+  push:
+    paths: ["tools/mahdi/**", "scripts/**", ".github/workflows/mahdi.yml"]
+  pull_request:
+    paths: ["tools/mahdi/**", "scripts/**", ".github/workflows/mahdi.yml"]
+permissions:
+  contents: read
+jobs:
+  build-and-test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test daily logging
+        run: swift run --package-path tools/mahdi MahdiChecks
+      - name: Package app
+        run: ./scripts/build-mahdi.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Mahdi-local-build
+          path: dist/Mahdi.zip

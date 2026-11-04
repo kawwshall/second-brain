@@ -1,0 +1,17 @@
+.DS_Store
+**/.build/
+**/.swiftpm/
+dist/
+*.app/
+*.zip
+*.dmg
+*.dSYM/
+.env
+.env.*
+**/session.json
+**/config.json
+**/.laps-index.json
+**/backups/
+**/.obsidian/workspace*.json
+**/.obsidian/cache/
+**/.trash/
