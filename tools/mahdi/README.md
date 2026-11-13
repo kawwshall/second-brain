@@ -50,3 +50,11 @@ swift run --package-path tools/mahdi MahdiChecks
 ```
 
 The build script uses `swift`, `codesign`, and the included `.icns` asset. To package directly into a chosen directory, set `MAHDI_INSTALL_DIR`; quit an existing installed app before replacing it.
+
+## Daily focus report
+
+At 11:59 p.m. local time, Mahdi writes a short **daily focus · Mahdi** report under the day's wrap-up. It refreshes the report after midnight to include the last minute. If the Mac is asleep or the app is closed, missed reports are written when Mahdi runs again. The menu bar's **Write today’s focus report** command previews the day so far in the same section.
+
+Keep writing your usual notes. The report reads timestamped lines under `logs`, recognizes common start, switch, and completion phrases, and groups similar activities. It uses recorded lap boundaries for timed focus and excludes recorded breaks. Time inferred between notes is marked with `~`. Ambiguous stretches between entries are unaccounted, and timed laps without a clear activity are shown as unidentified focus. Report inference is local and rule-based. Unusual wording can be missed, and a timer measures elapsed focus time even if you step away.
+
+New timing data lives in the vault's private `.mahdi-timing.json`. Older notes can contribute estimates. Older laps have no recorded timing. Automatic reports begin with the day this version first runs for the connected vault.

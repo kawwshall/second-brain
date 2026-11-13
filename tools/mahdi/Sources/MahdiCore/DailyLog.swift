@@ -8,10 +8,13 @@ public struct DailyLog {
         return String(format: "%02d·%03d", cal.component(.year, from: date) % 100, cal.ordinality(of: .day, in: .year, for: date)!)
     }
     public func file(_ date: Date) -> URL { vault.appendingPathComponent("datodine/\(dateName(date)).md") }
+    func template(_ date: Date) -> String {
+        "# \(dateName(date))\n\n[[Home]] · [[priorities]]\n\nredclub\n\nblueclub\n\nwhiteclub\n\ngoldclub\n\nlogs\n\nwhat got done / where to start next\n"
+    }
     public func write(id: String, date: Date, text: String) throws {
         let path = file(date)
         try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
-        var content = FileManager.default.fileExists(atPath: path.path) ? try String(contentsOf: path, encoding: .utf8) : "# \(dateName(date))\n\n[[Home]] · [[priorities]]\n\nredclub\n\nblueclub\n\nwhiteclub\n\ngoldclub\n\nlogs\n\nwhat got done / where to start next\n"
+        var content = FileManager.default.fileExists(atPath: path.path) ? try String(contentsOf: path, encoding: .utf8) : template(date)
         let indexURL = vault.appendingPathComponent(".laps-index.json")
         var index: [String: String] = [:]
         if FileManager.default.fileExists(atPath: indexURL.path) {

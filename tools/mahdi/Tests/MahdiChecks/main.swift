@@ -80,3 +80,55 @@ try checks.testUserEditedEntryIsPreservedOnLaterAutosave()
 try checks.testCorruptIndexDoesNotOverwriteDailyNote()
 try checks.testLocalYearBoundaryAndLeapDay()
 print("Passed 5 daily-log checks against temporary vaults.")
+
+func checkDailyReport() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let log = DailyLog(vault: root)
+    let calendar = Calendar.current
+    let day = calendar.startOfDay(for: Date())
+    func time(_ hour: Int, _ minute: Int) -> Date {
+        calendar.date(bySettingHour: hour, minute: minute, second: 0, of: day)!
+    }
+    let original = """
+    # test
+
+    logs
+    9:00 trying to fix keyboard
+    9:01 fixed keyboard
+    9:03 starting invoice matching
+    9:04 idea about a timer
+    9:15 submitted invoice matching
+    9:20 back to invoice matching
+    9:25 finished invoice matching
+
+    what got done / where to start next
+    - keep this manual bullet
+    """
+    let path = log.file(day)
+    try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try original.write(to: path, atomically: true, encoding: .utf8)
+    try log.saveTiming(id: "lap", timing: LapTiming(start: time(9, 3), end: time(9, 15)))
+    try log.saveTiming(id: "break", timing: LapTiming(start: time(9, 15), end: time(9, 20), isBreak: true))
+    try log.saveTiming(id: "overnight", timing: LapTiming(start: time(23, 50), end: time(23, 50).addingTimeInterval(25 * 60)))
+    try log.writeReport(for: day, through: time(23, 59))
+    try log.writeReport(for: day, through: time(23, 59))
+    let contents = try String(contentsOf: path, encoding: .utf8)
+    try expect(contents.contains("keyboard — ~1m from notes"), "completion closes estimated task")
+    try expect(contents.contains("invoice matching — 12m timed + ~5m from notes"), "repeat groups without double counting")
+    try expect(contents.contains("Unidentified focus — 9m timed"), "cutoff clips active lap")
+    try expect(contents.contains("fixed keyboard · submitted invoice matching · finished invoice matching"), "completion outcomes")
+    try expect(contents.contains("- keep this manual bullet"), "manual summary is preserved")
+    try expect(contents.components(separatedBy: "### daily focus · Mahdi").count == 2, "report is replaced")
+    try expect(!contents.contains("timer —"), "asides do not become activities")
+    let next = calendar.date(byAdding: .day, value: 1, to: day)!
+    try log.writeReport(for: day, through: next)
+    let final = try String(contentsOf: path, encoding: .utf8)
+    try expect(final.contains("Unidentified focus — 10m timed"), "midnight refresh completes prior day")
+    try log.writeReport(for: next, through: next.addingTimeInterval(60 * 60))
+    let nextNote = try String(contentsOf: log.file(next), encoding: .utf8)
+    try expect(nextNote.contains("Unidentified focus — 15m timed"), "cross-midnight lap splits")
+}
+
+try checkDailyReport()
+print("Passed daily-report checks against a temporary vault.")

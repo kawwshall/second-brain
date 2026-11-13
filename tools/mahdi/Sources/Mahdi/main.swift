@@ -12,6 +12,7 @@ struct Session: Codable {
     var closing = ""
     var noteID = UUID().uuidString
     var noteDate = Date()
+    var noteHasTimestamp: Bool?
     var lapID = UUID().uuidString
 }
 
@@ -26,6 +27,8 @@ struct Session: Codable {
     let stateURL: URL
     var timer: Timer?
     var pending: Task<Void, Never>?
+    private var lastReportCheck: Date?
+    @Published var reportStatus = ""
     init() {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("SecondBrainPomodoro")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -37,8 +40,9 @@ struct Session: Codable {
         }
         s = (try? JSONDecoder().decode(Session.self, from: Data(contentsOf: stateURL))) ?? Session()
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in Task { @MainActor in self?.tick() } }
-        tick()
+        if s.noteHasTimestamp == nil { s.noteHasTimestamp = !s.update.isEmpty }
         if vault != nil { _ = flush() }
+        tick()
     }
     var remaining: Int { max(0, Int(ceil((s.deadline ?? now).timeIntervalSince(now)))) }
     var clock: String { String(format: "%02d:%02d", remaining / 60, remaining % 60) }
@@ -55,21 +59,33 @@ struct Session: Codable {
         catch { self.error = "Could not write daily note: \(error.localizedDescription)"; return false }
     }
     func start() {
-        let date = Date(); s.lapID = UUID().uuidString
-        guard record(s.lapID + "-start", date, s.opening) else { return }
-        s.started = date; s.deadline = date.addingTimeInterval(25 * 60); s.phase = "focus"
-        s.update = ""; s.closing = ""; s.noteID = UUID().uuidString; s.noteDate = date
+        let date = Date()
+        let deadline = date.addingTimeInterval(25 * 60)
+        let id = UUID().uuidString
+        guard record(id + "-start", date, s.opening),
+              saveTiming(id: id, start: date, end: deadline) else { return }
+        s.lapID = id
+        s.started = date; s.deadline = deadline; s.phase = "focus"
+        s.update = ""; s.closing = ""; s.noteID = UUID().uuidString; s.noteDate = date; s.noteHasTimestamp = false
         now = date; persist()
     }
     func tick() {
         now = Date()
         if let deadline = s.deadline, now >= deadline {
-            if s.phase == "focus" { s.phase = "closing"; NSSound(named: "Glass")?.play(); NSApp.activate(ignoringOtherApps: true) }
+            if s.phase == "focus" {
+                if let start = s.started, !saveTiming(id: s.lapID, start: start, end: deadline) { return }
+                s.phase = "closing"; NSSound(named: "Glass")?.play(); NSApp.activate(ignoringOtherApps: true)
+            }
             else if s.phase == "break" { s.phase = "ready"; s.opening = ""; NSSound(named: "Glass")?.play(); NSApp.activate(ignoringOtherApps: true) }
             s.deadline = nil; persist()
         }
+        checkReports(at: now)
     }
     func changed() {
+        if s.noteHasTimestamp != true, !s.update.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            s.noteDate = Date()
+            s.noteHasTimestamp = true
+        }
         persist(); pending?.cancel()
         pending = Task { try? await Task.sleep(nanoseconds: 800_000_000); guard !Task.isCancelled else { return }; flush() }
     }
@@ -78,14 +94,74 @@ struct Session: Codable {
         return record(s.noteID, s.noteDate, s.update)
     }
     func newNote() {
-        guard flush() else { return }; s.update = ""; s.noteID = UUID().uuidString; s.noteDate = Date(); persist()
+        guard flush() else { return }; s.update = ""; s.noteID = UUID().uuidString; s.noteDate = Date(); s.noteHasTimestamp = false; persist()
     }
-    func finish() { pending?.cancel(); _ = flush(); s.phase = "closing"; s.deadline = nil; persist() }
+    func finish() {
+        pending?.cancel()
+        guard flush() else { return }
+        if let start = s.started, let deadline = s.deadline,
+           !saveTiming(id: s.lapID, start: start, end: min(Date(), deadline)) { return }
+        s.phase = "closing"; s.deadline = nil; persist()
+    }
+
+    private func saveTiming(id: String, start: Date, end: Date, isBreak: Bool = false) -> Bool {
+        guard let log else { return false }
+        do {
+            try log.saveTiming(id: id, timing: LapTiming(start: start, end: end, isBreak: isBreak))
+            return true
+        } catch {
+            self.error = "Could not save lap timing: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    private func checkReports(at date: Date) {
+        let calendar = Calendar.current
+        guard let log, let minute = calendar.dateInterval(of: .minute, for: date)?.start,
+              minute != lastReportCheck else { return }
+        lastReportCheck = minute
+        let today = calendar.startOfDay(for: date)
+        let key = "dailyReportCursor:" + log.vault.standardizedFileURL.path
+        let defaults = UserDefaults.standard
+        var day = defaults.object(forKey: key) as? Date ?? today
+        if day > today { day = today }
+        defaults.set(day, forKey: key)
+        do {
+            while day < today {
+                guard let next = calendar.date(byAdding: .day, value: 1, to: day) else { return }
+                if try log.writeReport(for: day, through: next) {
+                    reportStatus = "Daily focus saved to \(log.dateName(day))"
+                }
+                day = next
+                defaults.set(day, forKey: key)
+            }
+            if let deadline = calendar.date(bySettingHour: 23, minute: 59, second: 0, of: today),
+               date >= deadline, try log.writeReport(for: today, through: date) {
+                reportStatus = "Daily focus saved to \(log.dateName(today))"
+            }
+        } catch {
+            reportStatus = "Daily report could not be saved: \(error.localizedDescription)"
+        }
+    }
+
+    func reportToday() {
+        guard let log, flush() else { return }
+        let date = Date()
+        do {
+            reportStatus = try log.writeReport(for: date, through: date)
+                ? "Daily focus saved to \(log.dateName(date))"
+                : "Add a timestamped note or start a lap first."
+        } catch {
+            reportStatus = "Daily report could not be saved: \(error.localizedDescription)"
+        }
+    }
     func closeLap() {
         guard flush() else { return }
         let date = Date()
-        guard record(s.lapID + "-end", date, s.closing) else { return }
-        s.phase = "break"; s.deadline = date.addingTimeInterval(5 * 60); s.update = ""; s.noteID = UUID().uuidString; s.noteDate = date; now = date; persist()
+        let breakEnd = date.addingTimeInterval(5 * 60)
+        guard record(s.lapID + "-end", date, s.closing),
+              saveTiming(id: s.lapID + "-break", start: date, end: breakEnd, isBreak: true) else { return }
+        s.phase = "break"; s.deadline = breakEnd; s.update = ""; s.noteID = UUID().uuidString; s.noteDate = date; s.noteHasTimestamp = false; now = date; persist()
     }
     func chooseVault() {
         guard s.phase == "ready" || vault == nil else {
@@ -101,6 +177,8 @@ struct Session: Codable {
         do {
             try JSONEncoder().encode(selected.path).write(to: configURL, options: .atomic)
             vault = selected; error = ""; saved = "Vault connected"
+            lastReportCheck = nil
+            checkReports(at: Date())
         } catch { self.error = "Could not save vault setting: \(error.localizedDescription)" }
     }
     func openDaily() {
@@ -200,6 +278,8 @@ final class FloatingPanel: NSPanel {
         MenuBarExtra {
             Button("Show Mahdi", action: PanelHost.show)
             Button("Daily note", action: model.openDaily)
+            Button("Write today’s focus report", action: model.reportToday).disabled(model.vault == nil)
+            if !model.reportStatus.isEmpty { Text(model.reportStatus) }
             Button("Choose vault…", action: model.chooseVault).disabled(model.s.phase != "ready" && model.vault != nil)
             Divider()
             Button("Quit") { _ = model.flush(); model.persist(); NSApp.terminate(nil) }

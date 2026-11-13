@@ -15,3 +15,5 @@ dist/
 **/.obsidian/workspace*.json
 **/.obsidian/cache/
 **/.trash/
+
+**/.mahdi-timing.json
