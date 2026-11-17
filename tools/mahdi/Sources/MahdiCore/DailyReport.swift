@@ -101,18 +101,37 @@ extension DailyLog {
             lines = FocusReport(notes: current.notes, timings: current.timings,
                                 start: current.start, end: current.end).lines
         }
-        let block = (["%% mahdi-report %%"] + lines + ["%% /mahdi-report %%"]).joined(separator: "\n") + "\n"
+        let block = lines.joined(separator: "\n") + "\n"
+        let indexPath = vault.appendingPathComponent(".mahdi-reports.json")
+        var reports: [String: String] = [:]
+        if FileManager.default.fileExists(atPath: indexPath.path) {
+            reports = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: indexPath))
+        }
+        let key = dateName(date)
         var updated = content
-        if let existing = updated.range(of: #"(?m)^%% mahdi-report %%\n[\s\S]*?^%% /mahdi-report %%(?:\n|$)|^### daily focus · Mahdi[ \t]*\n(?:^> - [^\n]*\n?)*"#, options: .regularExpression) {
+        let legacy = #"(?m)^%% mahdi-report %%\n[\s\S]*?^%% /mahdi-report %%(?:\n|$)|^### daily focus · Mahdi[ \t]*\n(?:^> - [^\n]*\n?)*"#
+        let wrap = updated.range(of: #"(?mi)^(?:#{1,6} +)?what got done / where to start next[ \t]*$"#, options: .regularExpression)
+        if let existing = updated.range(of: legacy, options: .regularExpression) {
             updated.replaceSubrange(existing, with: block)
-        } else if let wrap = updated.range(of: #"(?mi)^(?:#{1,6} +)?what got done / where to start next[ \t]*$"#, options: .regularExpression) {
-            updated.insert(contentsOf: "\n\n" + block, at: wrap.upperBound)
+        } else if let wrap {
+            let firstBullet = updated[wrap.upperBound...].firstIndex { !$0.isWhitespace } ?? updated.endIndex
+            let remaining = updated[firstBullet...]
+            if let previous = reports[key], !previous.isEmpty, remaining.hasPrefix(previous) {
+                let end = updated.index(firstBullet, offsetBy: previous.count)
+                updated.replaceSubrange(firstBullet..<end, with: block)
+            } else if !remaining.hasPrefix(block) {
+                updated.insert(contentsOf: "\n\n" + block, at: wrap.upperBound)
+            }
         } else {
             updated += "\n\nwhat got done / where to start next\n\n" + block
         }
         if updated != content {
             try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
             try updated.write(to: path, atomically: true, encoding: .utf8)
+        }
+        if reports[key] != block {
+            reports[key] = block
+            try JSONEncoder().encode(reports).write(to: indexPath, options: .atomic)
         }
         return true
     }

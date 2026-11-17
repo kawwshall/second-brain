@@ -120,7 +120,7 @@ func checkDailyReport() throws {
     try expect(contents.contains("Unidentified focus — 9m timed"), "cutoff clips active lap")
     try expect(contents.contains("fixed keyboard · submitted invoice matching · finished invoice matching"), "completion outcomes")
     try expect(contents.contains("- keep this manual bullet"), "manual summary is preserved")
-    try expect(contents.components(separatedBy: "%% mahdi-report %%").count == 2, "report is replaced")
+    try expect(contents.components(separatedBy: "- keyboard —").count == 2, "report is replaced")
     try expect(!contents.contains("timer —"), "asides do not become activities")
     try expect(!contents.contains("listened to music —"), "incidental notes do not label timed laps")
     let source = try log.reportSource(for: day, through: time(23, 59))
@@ -132,6 +132,8 @@ func checkDailyReport() throws {
     try expect(summarized.contains("Mahdi timer total — 21m 0s"))
     try expect(summarized.contains("- keep this manual bullet"))
     try expect(!summarized.contains("### daily focus"))
+    try expect(!summarized.contains("%%"), "report has no markers")
+    try expect(!summarized.contains("keyboard —"), "plain previous report is replaced")
     let next = calendar.date(byAdding: .day, value: 1, to: day)!
     try log.writeReport(for: day, through: next)
     let final = try String(contentsOf: path, encoding: .utf8)
