@@ -4,7 +4,7 @@ The ecosystem has two independent pieces: a copyable Obsidian starter vault and 
 
 Mahdi uses SwiftUI for the compact widget and note popover, AppKit for its floating panel and vault picker, and Foundation for local files. There are no remote services or third-party runtime packages.
 
-`Sources/Mahdi/main.swift` holds the timer state, draft persistence, folder selection, and UI. `Sources/MahdiCore/DailyLog.swift` owns personal-date filenames, daily templates, insertion before the wrap-up section, and entry updates. The MahdiChecks executable runs core tests against temporary vaults only, with no XCTest dependency.
+`Sources/Mahdi/MahdiApp.swift` holds the timer state, draft persistence, folder selection, and UI. `Sources/MahdiCore/DailyLog.swift` owns personal-date filenames, daily templates, insertion before the wrap-up section, and entry updates. The MahdiChecks executable runs core tests against temporary vaults only, with no XCTest dependency.
 
 A lap moves through `ready → focus → closing → break → ready`. The deadline is an absolute date so a delayed timer tick does not stretch the countdown. Closing and starting the next lap require user action. Notes are saved after a short debounce and on app termination; drafts are also persisted separately.
 

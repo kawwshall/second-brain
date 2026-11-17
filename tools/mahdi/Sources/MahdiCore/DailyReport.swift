@@ -1,6 +1,6 @@
 import Foundation
 
-public struct LapTiming: Codable {
+public struct LapTiming: Codable, Equatable {
     public let start: Date
     public let end: Date
     public let isBreak: Bool
@@ -26,16 +26,49 @@ extension DailyLog {
         return try JSONDecoder().decode([String: LapTiming].self, from: Data(contentsOf: timingFile))
     }
 
-    @discardableResult
-    public func writeReport(for date: Date, through cutoff: Date) throws -> Bool {
+    public struct ReportSource: Equatable {
+        fileprivate let notes: [ReportNote]
+        fileprivate let timings: [LapTiming]
+        fileprivate let start: Date
+        fileprivate let end: Date
+
+        public var modelInput: String {
+            let formatter = DateFormatter()
+            formatter.dateFormat = "HH:mm"
+            let entries = notes.map { "\(formatter.string(from: $0.time)) \($0.text)" }
+            let intervals = timings.map {
+                let from = formatter.string(from: max(start, $0.start))
+                let clippedEnd = min(end, $0.end)
+                let to = Calendar.current.isDate(clippedEnd, inSameDayAs: start)
+                    ? formatter.string(from: clippedEnd) : "end of day"
+                return "\($0.isBreak ? "Break" : "Timer") \(from)–\(to)"
+            }
+            return "Timestamped notes:\n" + entries.joined(separator: "\n") +
+                "\nTimer intervals (clock time only):\n" + intervals.joined(separator: "\n")
+        }
+
+        fileprivate var timerTotal: String? {
+            let points = Set(timings.flatMap { [max(start, $0.start), min(end, $0.end)] }).sorted()
+            let duration = zip(points, points.dropFirst()).reduce(0.0) { sum, pair in
+                let covering = timings.filter { $0.start <= pair.0 && $0.end >= pair.1 }
+                if covering.isEmpty || covering.contains(where: { $0.isBreak }) { return sum }
+                return sum + pair.1.timeIntervalSince(pair.0)
+            }
+            let seconds = Int(duration.rounded())
+            guard seconds > 0 else { return nil }
+            return "Mahdi timer total — \(seconds / 60)m \(seconds % 60)s"
+        }
+    }
+
+    public func reportSource(for date: Date, through cutoff: Date) throws -> ReportSource? {
         let calendar = Calendar.current
-        guard let day = calendar.dateInterval(of: .day, for: date) else { return false }
+        guard let day = calendar.dateInterval(of: .day, for: date) else { return nil }
         let end = min(day.end, cutoff)
-        guard end > day.start else { return false }
+        guard end > day.start else { return nil }
         let timings = try readTimings().values.filter { $0.start < end && $0.end > day.start && $0.end > $0.start }
         let path = file(date)
         let exists = FileManager.default.fileExists(atPath: path.path)
-        guard exists || timings.contains(where: { !$0.isBreak }) else { return false }
+        guard exists || timings.contains(where: { !$0.isBreak }) else { return nil }
         let content = exists ? try String(contentsOf: path, encoding: .utf8) : template(date)
         var notes = ReportNote.read(from: content, day: day.start, before: end, calendar: calendar)
         if let overnight = timings.filter({ !$0.isBreak && $0.start < day.start }).map(\.start).min(),
@@ -44,18 +77,38 @@ extension DailyLog {
                                         before: day.start, calendar: calendar)
             notes = prior.filter { $0.time >= overnight.addingTimeInterval(-60) } + notes
         }
-        guard !notes.isEmpty || timings.contains(where: { !$0.isBreak }) else { return false }
+        guard !notes.isEmpty || timings.contains(where: { !$0.isBreak }) else { return nil }
 
-        let report = FocusReport(notes: notes, timings: timings, start: day.start, end: end)
-        let heading = "### daily focus · Mahdi"
-        let block = ([heading] + report.lines.map { "> " + $0 }).joined(separator: "\n") + "\n"
+        return ReportSource(notes: notes, timings: timings.sorted {
+            if $0.start != $1.start { return $0.start < $1.start }
+            if $0.end != $1.end { return $0.end < $1.end }
+            return !$0.isBreak && $1.isBreak
+        }, start: day.start, end: end)
+    }
+
+    @discardableResult
+    public func writeReport(for date: Date, through cutoff: Date, summary: [String]? = nil,
+                            source: ReportSource? = nil) throws -> Bool {
+        guard let current = try reportSource(for: date, through: cutoff) else { return false }
+        if let source, current != source { throw ReportError.notesChanged }
+        let path = file(date)
+        let content = FileManager.default.fileExists(atPath: path.path)
+            ? try String(contentsOf: path, encoding: .utf8) : template(date)
+        let lines: [String]
+        if let summary {
+            lines = summary.map { "- " + $0 } + (current.timerTotal.map { ["- " + $0] } ?? [])
+        } else {
+            lines = FocusReport(notes: current.notes, timings: current.timings,
+                                start: current.start, end: current.end).lines
+        }
+        let block = (["%% mahdi-report %%"] + lines + ["%% /mahdi-report %%"]).joined(separator: "\n") + "\n"
         var updated = content
-        if let existing = updated.range(of: "(?m)^" + NSRegularExpression.escapedPattern(for: heading) + "[ \\t]*\\n(?:^> - [^\\n]*\\n?)*", options: .regularExpression) {
+        if let existing = updated.range(of: #"(?m)^%% mahdi-report %%\n[\s\S]*?^%% /mahdi-report %%(?:\n|$)|^### daily focus · Mahdi[ \t]*\n(?:^> - [^\n]*\n?)*"#, options: .regularExpression) {
             updated.replaceSubrange(existing, with: block)
-        } else if let wrap = updated.range(of: "(?mi)^(?:#{1,6} +)?what got done / where to start next[ \\t]*$", options: .regularExpression) {
+        } else if let wrap = updated.range(of: #"(?mi)^(?:#{1,6} +)?what got done / where to start next[ \t]*$"#, options: .regularExpression) {
             updated.insert(contentsOf: "\n\n" + block, at: wrap.upperBound)
         } else {
-            updated += "\n\n" + block
+            updated += "\n\nwhat got done / where to start next\n\n" + block
         }
         if updated != content {
             try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -65,7 +118,7 @@ extension DailyLog {
     }
 }
 
-private struct ReportNote {
+private struct ReportNote: Equatable {
     let time: Date
     let text: String
 
@@ -97,6 +150,11 @@ private struct ReportNote {
             $0.element.time == $1.element.time ? $0.offset < $1.offset : $0.element.time < $1.element.time
         }.map(\.element)
     }
+}
+
+private enum ReportError: LocalizedError {
+    case notesChanged
+    var errorDescription: String? { "Notes changed while the report was being drafted. Try again." }
 }
 
 private struct FocusReport {
@@ -165,24 +223,17 @@ private struct FocusReport {
                 continue
             }
             let prefix = note.text.range(of: starts, options: [.regularExpression, .caseInsensitive])
-            let lap = timings.first {
-                !$0.isBreak && note.time >= $0.start.addingTimeInterval(-59.999) && note.time < $0.end
-            }
-            let firstLapNote = lap.map { lap in
-                !changes.contains { $0.0 >= lap.start.addingTimeInterval(-59.999) && $0.0 <= note.time }
-            } ?? false
             let troubleshooting = lower.range(of: " so (?:i(?: am)? )?trying to fix ", options: .regularExpression)
             let hasStartCue = prefix != nil || troubleshooting != nil
-            guard hasStartCue || firstLapNote else { continue }
+            guard hasStartCue else { continue }
             let label: String
             if let prefix { label = String(note.text[prefix.upperBound...]) }
             else if let troubleshooting { label = String(note.text[..<troubleshooting.lowerBound]) }
-            else { label = note.text }
+            else { continue }
             guard !words(label).isEmpty else { continue }
             let index = activity(label)
-            if active?.1 != index || firstLapNote {
-                if hasStartCue { close(at: note.time) }
-                else { active = nil }
+            if active?.1 != index {
+                close(at: note.time)
                 active = (note.time, index)
                 changes.append((note.time, index))
             }

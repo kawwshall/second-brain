@@ -53,8 +53,10 @@ The build script uses `swift`, `codesign`, and the included `.icns` asset. To pa
 
 ## Daily focus report
 
-At 11:59 p.m. local time, Mahdi writes a short **daily focus · Mahdi** report under the day's wrap-up. It refreshes the report after midnight to include the last minute. If the Mac is asleep or the app is closed, missed reports are written when Mahdi runs again. The menu bar's **Write today’s focus report** command previews the day so far in the same section.
+At 11:59 p.m. local time, Mahdi writes short report bullets directly under the day's wrap-up. It refreshes the report after midnight to include the last minute. If the Mac is asleep or the app is closed, missed reports are written when Mahdi runs again. The menu bar's **Write today’s focus report** command previews the day so far in the same section.
 
-Keep writing your usual notes. The report reads timestamped lines under `logs`, recognizes common start, switch, and completion phrases, and groups similar activities. It uses recorded lap boundaries for timed focus and excludes recorded breaks. Time inferred between notes is marked with `~`. Ambiguous stretches between entries are unaccounted, and timed laps without a clear activity are shown as unidentified focus. Report inference is local and rule-based. Unusual wording can be missed, and a timer measures elapsed focus time even if you step away.
+Keep writing your usual notes. On macOS 26 or later with Apple Intelligence enabled, Mahdi uses Apple's on-device model to group timestamped notes by project and summarize concrete progress and next steps. Mahdi adds the measured timer total separately, excluding recorded breaks. Reports are generated locally.
+
+If the model is unavailable or cannot process the log, Mahdi writes a basic report using explicit start, switch, and completion phrases. Basic estimates are marked with `~`. The menu bar shows which report was saved, and Mahdi Settings shows whether the model is available.
 
 New timing data lives in the vault's private `.mahdi-timing.json`. Older notes can contribute estimates. Older laps have no recorded timing. Automatic reports begin with the day this version first runs for the connected vault.

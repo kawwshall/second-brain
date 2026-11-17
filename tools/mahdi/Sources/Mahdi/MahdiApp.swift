@@ -29,6 +29,7 @@ struct Session: Codable {
     var pending: Task<Void, Never>?
     private var lastReportCheck: Date?
     @Published var reportStatus = ""
+    @Published private(set) var reporting = false
     init() {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("SecondBrainPomodoro")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -117,42 +118,67 @@ struct Session: Codable {
 
     private func checkReports(at date: Date) {
         let calendar = Calendar.current
-        guard let log, let minute = calendar.dateInterval(of: .minute, for: date)?.start,
+        guard !reporting, let log, let minute = calendar.dateInterval(of: .minute, for: date)?.start,
               minute != lastReportCheck else { return }
         lastReportCheck = minute
         let today = calendar.startOfDay(for: date)
         let key = "dailyReportCursor:" + log.vault.standardizedFileURL.path
         let defaults = UserDefaults.standard
-        var day = defaults.object(forKey: key) as? Date ?? today
-        if day > today { day = today }
+        let day = min(defaults.object(forKey: key) as? Date ?? today, today)
         defaults.set(day, forKey: key)
-        do {
-            while day < today {
-                guard let next = calendar.date(byAdding: .day, value: 1, to: day) else { return }
-                if try log.writeReport(for: day, through: next) {
-                    reportStatus = "Daily focus saved to \(log.dateName(day))"
-                }
-                day = next
-                defaults.set(day, forKey: key)
+        let deadline = calendar.date(bySettingHour: 23, minute: 59, second: 0, of: today)
+        let dueTonight = deadline.map { date >= $0 } ?? false
+        guard day < today || dueTonight else { return }
+
+        runReport {
+            var pendingDay = day
+            while pendingDay < today {
+                guard let next = calendar.date(byAdding: .day, value: 1, to: pendingDay) else { return }
+                try await self.writeReport(log, for: pendingDay, through: next)
+                pendingDay = next
+                defaults.set(pendingDay, forKey: key)
             }
-            if let deadline = calendar.date(bySettingHour: 23, minute: 59, second: 0, of: today),
-               date >= deadline, try log.writeReport(for: today, through: date) {
-                reportStatus = "Daily focus saved to \(log.dateName(today))"
-            }
-        } catch {
-            reportStatus = "Daily report could not be saved: \(error.localizedDescription)"
+            if dueTonight { try await self.writeReport(log, for: today, through: date) }
         }
     }
 
     func reportToday() {
-        guard let log, flush() else { return }
+        guard !reporting, let log, flush() else { return }
         let date = Date()
+        runReport {
+            try await self.writeReport(log, for: date, through: date)
+        }
+    }
+
+    private func runReport(_ work: @escaping @MainActor () async throws -> Void) {
+        reporting = true
+        reportStatus = "Writing focus report…"
+        Task {
+            defer { reporting = false }
+            do { try await work() }
+            catch { reportStatus = "Daily report could not be saved: \(error.localizedDescription)" }
+        }
+    }
+
+    private func writeReport(_ log: DailyLog, for date: Date, through cutoff: Date) async throws {
+        guard let source = try log.reportSource(for: date, through: cutoff) else {
+            reportStatus = "Add a timestamped note or start a lap first."
+            return
+        }
+        var summary: [String]?
+        var detail = ReportAI.status
         do {
-            reportStatus = try log.writeReport(for: date, through: date)
-                ? "Daily focus saved to \(log.dateName(date))"
-                : "Add a timestamped note or start a lap first."
+            summary = try await ReportAI.summarize(source)
+            if summary == nil, detail == "On-device AI is ready." {
+                detail = "AI returned no supported summary."
+            }
         } catch {
-            reportStatus = "Daily report could not be saved: \(error.localizedDescription)"
+            detail = "On-device AI couldn’t summarize this log."
+        }
+        if try log.writeReport(for: date, through: cutoff, summary: summary, source: source) {
+            let method = summary == nil ? "Basic report" : "AI report"
+            reportStatus = "\(method) saved to \(log.dateName(date))."
+            if summary == nil { reportStatus += " " + detail }
         }
     }
     func closeLap() {
@@ -164,6 +190,7 @@ struct Session: Codable {
         s.phase = "break"; s.deadline = breakEnd; s.update = ""; s.noteID = UUID().uuidString; s.noteDate = date; s.noteHasTimestamp = false; now = date; persist()
     }
     func chooseVault() {
+        guard !reporting else { return }
         guard s.phase == "ready" || vault == nil else {
             error = "Finish the lap and break before switching vaults."; return
         }
@@ -272,13 +299,13 @@ final class FloatingPanel: NSPanel {
                 Text("Mahdi").font(.title2.bold())
                 Text(model.vault?.path ?? "No vault connected").font(.caption).textSelection(.enabled)
                 Button("Choose vault…", action: model.chooseVault).disabled(model.s.phase != "ready" && model.vault != nil)
-                Text("Daily notes: datodine/YY·DDD.md").font(.caption).foregroundStyle(.secondary)
+                Text(ReportAI.status).font(.caption).foregroundStyle(.secondary)
             }.padding(24).frame(width: 360)
         }
         MenuBarExtra {
             Button("Show Mahdi", action: PanelHost.show)
             Button("Daily note", action: model.openDaily)
-            Button("Write today’s focus report", action: model.reportToday).disabled(model.vault == nil)
+            Button("Write today’s focus report", action: model.reportToday).disabled(model.vault == nil || model.reporting)
             if !model.reportStatus.isEmpty { Text(model.reportStatus) }
             Button("Choose vault…", action: model.chooseVault).disabled(model.s.phase != "ready" && model.vault != nil)
             Divider()
